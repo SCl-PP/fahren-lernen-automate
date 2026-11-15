@@ -55,7 +55,18 @@ def enable_debug_logging(wire_level: bool = True) -> None:
     logging.getLogger("urllib3").setLevel(logging.INFO)
 
 
+MAX_UPLOAD_DIM = 1024  # downscale captures so the longest side is <= this
+
+
 def _png_bytes(image: Image.Image) -> bytes:
+    # Retina / large-window captures can balloon to >1 MB and trip the 20s
+    # upload timeout. Downscale for Gemini — normalized 0-1000 bounding boxes
+    # are resolution-independent so coord accuracy is unaffected.
+    longest = max(image.size)
+    if longest > MAX_UPLOAD_DIM:
+        scale = MAX_UPLOAD_DIM / longest
+        new_size = (int(image.width * scale), int(image.height * scale))
+        image = image.resize(new_size, Image.LANCZOS)
     buf = io.BytesIO()
     image.convert("RGB").save(buf, format="PNG", optimize=False)
     return buf.getvalue()

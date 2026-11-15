@@ -211,6 +211,32 @@ def _tap_button(window: WindowInfo, capture: Capture, box) -> None:
     tap(pt.x, pt.y)
 
 
+def _try_skip_recovery(
+    client: GeminiClient,
+    window: WindowInfo,
+    iter_dir: Path,
+    reason: str,
+) -> tuple[bool, str]:
+    """Fallback for unrecoverable iteration states: tap 'Überspringen' to skip
+    the current question so the loop stays alive. Returns (tapped, notes).
+    """
+    try:
+        current = capture_window(window)
+        current.image.save(iter_dir / "skip_recovery_pre.png")
+        skip = locate_button(client, current, "Überspringen")
+        (iter_dir / "locate_ueberspringen.json").write_text(
+            skip.model_dump_json(indent=2)
+        )
+        if skip.found and skip.box is not None:
+            _tap_button(window, current, skip.box)
+            time.sleep(1.5)
+            return True, f"recovered via Überspringen ({reason})"
+        return False, f"could not recover: no Überspringen visible ({reason})"
+    except Exception as e:
+        log.warning("skip recovery failed: %s", e)
+        return False, f"skip recovery failed: {e}"
+
+
 def _submit_then_advance(
     client: GeminiClient,
     window: WindowInfo,
@@ -365,6 +391,12 @@ def _handle_film(
                 q_triage.question_type, original_solver_boxes=ans_mc.answer_boxes,
             )
 
+    if not r.advanced:
+        recovered, note = _try_skip_recovery(client, window, iter_dir, notes or "no advance (film)")
+        if recovered:
+            r.advanced = True
+        r.notes = f"{r.notes + '; ' if r.notes else ''}{note}"
+
 
 def _run_iteration(
     client: GeminiClient,
@@ -438,6 +470,13 @@ def _run_iteration(
 
         if triage.question_type == "film":
             _handle_film(client, window, pre, triage, iter_dir, cfg, r, cache)
+            if not r.advanced:
+                recovered, note = _try_skip_recovery(
+                    client, window, iter_dir, r.notes or "film path did not advance"
+                )
+                if recovered:
+                    r.advanced = True
+                r.notes = f"{r.notes + '; ' if r.notes else ''}{note}"
             return r
 
         if triage.question_type == "input":
@@ -459,6 +498,11 @@ def _run_iteration(
                     client, cache, pre, iter_dir / "feedback.png", iter_dir,
                     "input", original_input_field=ans.input_field,
                 )
+            if not r.advanced:
+                recovered, note = _try_skip_recovery(client, window, iter_dir, notes or "no advance")
+                if recovered:
+                    r.advanced = True
+                r.notes = f"{r.notes + '; ' if r.notes else ''}{note}"
             return r
 
         if triage.question_type in ("foto", "text"):
@@ -489,11 +533,20 @@ def _run_iteration(
                     client, cache, pre, iter_dir / "feedback.png", iter_dir,
                     triage.question_type, original_solver_boxes=ans_mc.answer_boxes,
                 )
+            if not r.advanced:
+                recovered, note = _try_skip_recovery(client, window, iter_dir, notes or "no advance")
+                if recovered:
+                    r.advanced = True
+                r.notes = f"{r.notes + '; ' if r.notes else ''}{note}"
             return r
 
     except Exception as e:
         log.exception("iteration %d failed", idx)
         r.error = str(e)
+        recovered, note = _try_skip_recovery(client, window, iter_dir, f"error: {e}")
+        if recovered:
+            r.advanced = True
+        r.notes = f"{r.notes + '; ' if r.notes else ''}{note}"
     return r
 
 
@@ -569,10 +622,13 @@ def run_loop(
                     len(cache), by_type,
                 )
 
-            if result.error:
+            # Only count errors that we could NOT recover from. If the loop
+            # skipped the question via Überspringen and advanced, we're still
+            # making progress and shouldn't trip the abort cap.
+            if result.error and not result.advanced:
                 consecutive_errors += 1
                 if consecutive_errors >= loop_cfg.max_consecutive_errors:
-                    log.error("%d consecutive errors; aborting", consecutive_errors)
+                    log.error("%d consecutive unrecovered errors; aborting", consecutive_errors)
                     break
             else:
                 consecutive_errors = 0
