@@ -1,0 +1,21 @@
+[project]
+name = "ios-mac-harness"
+version = "0.1.0"
+description = "Automated iOS-on-Mac app navigation harness driven by Gemini vision."
+requires-python = ">=3.11"
+dependencies = [
+    "google-genai>=0.3.0",
+    "pyobjc-framework-Quartz>=10.0",
+    "pyobjc-framework-Cocoa>=10.0",
+    "Pillow>=10.0",
+    "pydantic>=2.0",
+    "python-dotenv>=1.0",
+    "ImageHash>=4.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["harness"]
